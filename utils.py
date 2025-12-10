@@ -69,13 +69,14 @@ def load_state(PATH, device):
         return None
 
 # save current state
-def save_state(PATH, model, optimizer, epoch, history):
+def save_state(PATH, model, optimizer, epoch, history, scheduler=None):
     try:
         torch.save({
             'current_epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'history': history,
+            'scheduler': scheduler.state_dict() if scheduler else None
         }, PATH)
     except Exception as e:
         print(f"State couldn't be saved. Exception: {e}")
@@ -92,7 +93,11 @@ def train_model(
     epochs=10,
     device="cuda",
     n_processes=1,
-    i_process=1
+    i_process=1,
+    training_type="cnn",
+    debug=False,
+    current_epoch=1,
+    current_history=None
 ):
     best_val_loss = float("inf")
     best_weights = None
@@ -101,10 +106,10 @@ def train_model(
         "val_loss": [],
         "train_acc": [],
         "val_acc": []
-    }
+    } if not current_history else current_history
     
     
-    for epoch in range(1, epochs + 1):
+    for epoch in range(current_epoch, epochs + 1):
         model.train()
         running_loss = 0.0
         correct = 0
@@ -115,13 +120,17 @@ def train_model(
         
         for i, (xb, yb) in enumerate(loop, start=1):
             xb = xb.to(device)
-            yb = yb.to(device).long()
+            yb = yb.to(device).squeeze(1).long()
+            
             optimizer.zero_grad() # zero the parameter gradients
-            logits, _, _ = model(xb)
-            loss = criterion(logits.view(-1, logits.size(-1)), yb.view(-1))
+            if training_type == "cnn":
+                logits = model(xb)
+            else:
+                logits, _, _ = model(xb)
+            loss = criterion(logits, yb)
             loss.backward()
     
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # gradient clipping
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # gradient clipping
             optimizer.step() # update weights
     
             running_loss += loss.item() * xb.size(0)
@@ -129,7 +138,15 @@ def train_model(
             preds = torch.argmax(logits, dim=-1)
             correct += (preds == yb).sum().item()
             total += yb.numel()
-            loop.set_postfix(loss=(running_loss/len(loop)), acc=f"{(correct/total):.4f}")
+            loop.set_postfix(loss=(running_loss/total), acc=f"{(correct/total):.4f}")
+            
+            if debug:
+                print(f"Input shape: {xb.shape}")
+                print(f"Logits shape: {logits.shape}, target shape: {yb.shape}")
+                print(f"Running loss: {running_loss}")
+                print(f"Preds shape: {preds.shape}")
+                print(f"Correct: {correct}")
+                print(f"Total: {total}")
                 
         epoch_loss = running_loss / len(train_dataloader)
         epoch_acc = correct / total
@@ -150,19 +167,23 @@ def train_model(
             
             for j, (xb, yb) in enumerate(val_loop, start=1):
                 xb = xb.to(device)
-                yb = yb.to(device).long()
-    
-                logits, _, _ = model(xb)
-                loss = criterion(logits.view(-1, logits.size(-1)), yb.view(-1))
+                yb = yb.to(device).squeeze(1).long()
+
+                if training_type == "cnn":
+                    logits = model(xb)
+                else:
+                    logits, _, _ = model(xb)
+                    
+                loss = criterion(logits, yb)
                 val_loss += loss.item() * xb.size(0)
     
                 preds = torch.argmax(logits, dim=-1)
                 val_correct += (preds == yb).sum().item()
                 val_total += yb.numel()
     
-                val_loop.set_postfix(loss=val_loss/len(val_loop), acc=f"{(val_correct/val_total):.4f}")       
+                val_loop.set_postfix(loss=(val_loss/val_total), acc=f"{(val_correct/val_total):.4f}")       
         
-        val_loss = val_loss / val_len
+        val_loss = val_loss / val_total
         val_acc = val_correct / val_total
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)

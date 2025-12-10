@@ -6,6 +6,38 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
+class ExoNetDatasetCnn(Dataset):
+    def __init__(
+        self,
+        df_labels: pd.DataFrame,
+        transform=None,
+        target_transform=None
+    ):
+        self.df_data = df_labels
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def __len__(self):
+        return len(self.df_data)
+
+    def __getitem__(self, idx):
+        """
+        Return an image and its label
+        """
+        image_path = self.df_data.at[idx, "path"]
+        frame = Image.open(image_path).convert("RGB")
+        label = self.df_data.at[idx, "class"]
+
+        if self.transform:
+            frame = self.transform(frame)
+        if self.target_transform:
+            label = self.target_transform([label])
+
+        label_tensor = torch.from_numpy(label)
+
+        return frame, label_tensor
+        
+
 class ExoNetDatasetV2(Dataset):
     def __init__(
         self,
