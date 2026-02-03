@@ -8,6 +8,105 @@ from torch.utils.data import Dataset
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
+class WalkingLSTMDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        seq_len: int,
+        df: pd.DataFrame,
+        features_dir: str,
+        target_transform
+    ):
+        self.seq_len = seq_len
+        self.df = df
+        self.features_dir = features_dir
+        self.target_transform = target_transform
+
+        # Create a list of sequences
+        self.samples = []
+
+        for video_name, group in self.df.groupby('video'):
+            # IMPORTANT: Sort by frame to ensure temporal order
+            group = group.sort_values('frame', ascending=True).reset_index()
+            
+            # If video is shorter than sequence length, skip it
+            if len(group) < self.seq_len:
+                continue
+            
+            # Create Sliding Windows
+            # Range logic: Stops so the last window fits exactly at the end
+            for i in range(0, len(group) - self.seq_len + 1, 1):
+                
+                # The label is usually the label of the LAST frame in the sequence
+                # (We are predicting the current state based on history)
+                idx = group.iloc[i]['index']
+                
+                # Store the pointer (Video Name, Start Index)
+                self.samples.append((video_name, idx))
+                
+        print(f"Dataset Loaded: {len(self.samples)} sequences found across {df['video'].nunique()} videos.")
+
+    
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        # 1. Retrieve pointer
+        video_name, start_frame_idx = self.samples[idx]
+
+        embedding_paths = [ os.path.join(
+            self.features_dir, row["path"]
+        ) for _, row in self.df.iloc[start_frame_idx: start_frame_idx + self.seq_len, :].iterrows()]
+
+        target_class = self.df.at[start_frame_idx + self.seq_len -1, "class"]
+
+        # Load embeddings
+        embeddings = np.array([ np.load(path.replace(".jpg", ".npy")) for path in embedding_paths ])
+        
+        # Shape: (Sequence_Length, Feature_Dim) -> (16, 2048)
+        X = torch.from_numpy(embeddings).float()
+        y = self.target_transform([target_class])[0]
+        
+        return X, y
+
+class WalkingDataset(torch.utils.data.Dataset):
+    def __init__(
+            self, 
+            dataframe: pd.DataFrame,
+            img_dir: str,
+            transform,
+            target_transform,
+            return_filename=False
+        ):
+        super().__init__()
+        self.dataframe = dataframe
+        self.img_dir = img_dir
+        self.transform = transform
+        self.target_transform = target_transform
+        self.return_filename = return_filename
+
+    
+    def __len__(self):
+        return len(self.dataframe)
+    
+
+    def __getitem__(self, index):
+        row = self.dataframe.iloc[index]
+        image_path = os.path.join(self.img_dir, row["path"])
+        _class = row["class"]
+        img = Image.open(image_path)
+
+        if self.transform:
+            img = self.transform(img)
+
+        if self.target_transform:
+            _class = self.target_transform([_class])[0]
+
+        if self.return_filename:
+            return img, _class, row["path"]
+        
+        return img, _class
+
+
 class VideoDataset(torch.utils.data.Dataset):
     def __init__(
             self, 
